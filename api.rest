@@ -1,0 +1,40 @@
+# GET /products returns a list of all products
+GET http://localhost:5000/products
+
+###
+
+# GET /products/<id> returns a specific product by ID
+GET http://localhost:5000/products/1
+
+###
+
+# POST /products creates a new product
+POST http://localhost:5000/products
+Content-Type: application/json
+
+{
+    "name": "Product 1",
+    "description": "Description 1",
+    "price": 0.001,
+    "in_stock": true
+}
+
+###
+
+# PUT /products/<id> updates a specific product by ID
+PUT http://localhost:5000/products/1
+Content-Type: application/json
+
+{
+    "name": "Product 1",
+    "description": "Description 1",
+    "price": 10.00,
+    "in_stock": true
+}
+
+###
+
+# DELETE /products/<id> deletes a specific product by ID
+DELETE http://localhost:5000/products/1
+
+###
