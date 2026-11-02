@@ -1,4 +1,6 @@
+import re
 from flask import Flask, jsonify, request
+
 
 app = Flask(__name__)
 
@@ -142,8 +144,8 @@ def add_products():
     price = data.get('price')
     in_stock = data.get('in_stock', True)
 
-    if not isinstance(name, str) or not name.strip():
-        return jsonify({'error': 'Product name is required'}), 400
+    if not isinstance(name, str) or not name.strip() or not re.match(r'^[A-Za-z0-9]+$', name):
+        return jsonify({'error': 'Product name is required and must contain only letters and numbers'}), 400
     
     if not isinstance(description, str):
         return jsonify({'error': 'Description must be a string'}), 400
