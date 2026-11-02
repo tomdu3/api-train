@@ -13,23 +13,33 @@ POST http://localhost:5000/products
 Content-Type: application/json
 
 {
-    "name": "Product1",
+    "name": "Product 1",
     "description": "Description 1",
     "price": 34,
-    "in_stock": true
+    "in_stock": false
 }
 
 ###
 
 # PUT /products/<id> updates a specific product by ID
-PUT http://localhost:5000/products/1
+PUT http://localhost:5000/products/10
 Content-Type: application/json
 
 {
     "name": "Product 1",
     "description": "Description 1",
-    "price": 10.00,
-    "in_stock": true
+    "price": 10.00
+}
+
+###
+
+# PATCH /products/<id> updates a specific product by ID
+PATCH http://localhost:5000/products/10
+Content-Type: application/json
+
+{
+    "name": "Some cool name",
+    "description": "Cool description"
 }
 
 ###
