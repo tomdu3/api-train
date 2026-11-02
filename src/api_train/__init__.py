@@ -9,10 +9,6 @@ def health_check():
 def main() -> None:
     app.run(debug=True)
 
-if __name__ == '__main__':
-    main()
-
-
 products = {
     1: {
         "id": 1,
@@ -133,3 +129,7 @@ def get_products_by_id(product_id):
     if product:
         return jsonify(product),200
     return jsonify({'error': 'Product not found'}),404
+
+
+if __name__ == '__main__':
+    main()
