@@ -252,7 +252,13 @@ def update_product(product_id):
 
     return jsonify(product), 200
 
-
+@app.delete('/products/<int:product_id>')
+def delete_product(product_id):
+    if product_id not in products:
+        return jsonify({'error': 'Product not found'}), 404
+    product = products[product_id]
+    del products[product_id]
+    return jsonify({'message': f'Product - id:{product.get("id")} | name: {product.get("name")}, successfully deleted'}), 200
     
 
 
