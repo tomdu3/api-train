@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
@@ -6,8 +6,6 @@ app = Flask(__name__)
 def health_check():
     return jsonify({'status': 'ok'}), 200
 
-def main() -> None:
-    app.run(debug=True)
 
 products = {
     1: {
@@ -129,6 +127,48 @@ def get_products_by_id(product_id):
     if product:
         return jsonify(product),200
     return jsonify({'error': 'Product not found'}),404
+
+@app.post('/products/')
+def add_products():
+    global next_product_id
+    
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Request body must be a JSON object'}), 400
+    
+    name = data.get('name')
+    description = data.get('description')
+    price = data.get('price')
+    in_stock = data.get('in_stock', True)
+
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({'error': 'Product name is required'}), 400
+    
+    if not isinstance(description, str):
+        return jsonify({'error': 'Description must be a string'}), 400
+    
+    if isinstance(price, bool) or not isinstance(price, (int, float)) or price <=0:
+        return jsonify({'error': 'Price must be a positive number'}), 400
+
+    if not isinstance(in_stock, bool):
+        return jsonify({'error': 'In stock must be a boolean'}), 400
+    
+    product = {
+        'id': next_product_id,
+        'name': name.strip(),
+        'description': description,
+        'price': float(price),
+        'in_stock': in_stock,
+    }
+
+    products[next_product_id] = product
+    next_product_id += 1
+
+    return jsonify(product), 201
+
+def main() -> None:
+    app.run(debug=True)
 
 
 if __name__ == '__main__':
