@@ -1,17 +1,22 @@
 import re
-from flask import request, jsonify
-from api_train import app
-from api_train.models import products, next_product_id
+from decimal import Decimal, InvalidOperation
+from flask import Blueprint, jsonify, request
+from api_train import db
+from api_train.models import Product
+from api_train.old_db import next_product_id, products
+
+products_bp = Blueprint("products", __name__, url_prefix="/api/v1")
+health_bp = Blueprint("health", __name__, url_prefix="/api/v1")
 
 
 # Health check endpoint
-@app.get("/health")
+@health_bp.get("/health")
 def health_check():
     return jsonify({"status": "ok"}), 200
 
 
 # Routes / CRUD Endpoints
-@app.get("/products")
+@products_bp.get("/products")
 def get_products():
     result = list(products.values())
     in_stock_filter = request.args.get("in_stock", None)
@@ -24,7 +29,7 @@ def get_products():
     return jsonify(result), 200
 
 
-@app.get("/products/<int:product_id>")
+@products_bp.get("/products/<int:product_id>")
 def get_products_by_id(product_id):
     product = products.get(product_id)
     if product:
@@ -32,7 +37,7 @@ def get_products_by_id(product_id):
     return jsonify({"error": "Product not found"}), 404
 
 
-@app.post("/products/")
+@products_bp.post("/products/")
 def add_products():
     global next_product_id
 
@@ -80,7 +85,7 @@ def add_products():
     return jsonify(product), 201
 
 
-@app.put("/products/<int:product_id>")
+@products_bp.put("/products/<int:product_id>")
 def replace_product(product_id):
     data = request.get_json()
 
@@ -128,7 +133,7 @@ def replace_product(product_id):
     return jsonify(product), 200
 
 
-@app.patch("/products/<int:product_id>")
+@products_bp.patch("/products/<int:product_id>")
 def update_product(product_id):
     data = request.get_json()
 
@@ -182,7 +187,7 @@ def update_product(product_id):
     return jsonify(product), 200
 
 
-@app.delete("/products/<int:product_id>")
+@products_bp.delete("/products/<int:product_id>")
 def delete_product(product_id):
     if product_id not in products:
         return jsonify({"error": "Product not found"}), 404

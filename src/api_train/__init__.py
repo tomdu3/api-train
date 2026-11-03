@@ -16,9 +16,10 @@ def create_app(test_config=None):
 
     db.init_app(app)
 
-    from api_train.routes import products_bp
+    from api_train.routes import products_bp, health_bp
 
-    app.register_bluepring(products_bp)
+    app.register_blueprint(products_bp)
+    app.register_blueprint(health_bp)
 
     with app.app_context():
         db.create_all()
@@ -26,10 +27,7 @@ def create_app(test_config=None):
     return app
 
 
-# Flask application instance
-app = Flask(__name__)
-
-from api_train import routes  # noqa: E402, F401
+app = create_app()
 
 
 def main() -> None:
