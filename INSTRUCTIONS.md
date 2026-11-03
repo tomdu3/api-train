@@ -38,13 +38,14 @@ Python REST API during a live coding interview.
     pytest](#12-write-automated-tests-with-pytest)
 13. [Useful API improvements](#13-useful-api-improvements)
 14. [Connect a frontend to the API](#14-connect-a-frontend-to-the-api)
-15. [Python concepts to revise](#15-python-concepts-to-revise)
-16. [Live-coding approach and
-    communication](#16-live-coding-approach-and-communication)
-17. [Three-day preparation plan](#17-three-day-preparation-plan)
-18. [Practice exercises](#18-practice-exercises)
-19. [Interview-day checklist](#19-interview-day-checklist)
-20. [Quick reference](#20-quick-reference)
+15. [Containerise the API with Docker](#15-containerise-the-api-with-docker)
+16. [Python concepts to revise](#16-python-concepts-to-revise)
+17. [Live-coding approach and
+    communication](#17-live-coding-approach-and-communication)
+18. [Three-day preparation plan](#18-three-day-preparation-plan)
+19. [Practice exercises](#19-practice-exercises)
+20. [Interview-day checklist](#20-interview-day-checklist)
+21. [Quick reference](#21-quick-reference)
 
 ------------------------------------------------------------------------
 
@@ -1663,12 +1664,301 @@ so the frontend can respond appropriately.
 
 ------------------------------------------------------------------------
 
-## 15. Python concepts to revise
+## 15. Containerise the API with Docker
+
+Even if an interview does not require you to write a `Dockerfile` live,
+interviewers frequently ask how you would package, ship, or deploy your
+Flask API, or they may provide a starter repository that uses Docker.
+Understanding containerisation with `uv` and Flask lets you answer deployment
+questions with confidence.
+
+### 15.1 Core Docker concepts for the interview
+
+Be ready to explain these fundamentals in plain English:
+
+-   **Containerisation vs. Virtual Machines (VMs):** A virtual machine runs
+    a full guest operating system with its own kernel on top of virtualised
+    hardware, which takes gigabytes of memory and boots slowly. A **container**
+    shares the host machine's Linux kernel and isolates only the application
+    process, its filesystem, and its network namespace. Containers start in
+    milliseconds and use minimal overhead.
+-   **Image:** A read-only blueprint or template containing everything your
+    application needs to run: a minimal Linux filesystem, Python, `uv`, the
+    installed dependencies, and your application source code. Images are
+    built from a `Dockerfile`.
+-   **Container:** A live, running instance created from an **Image**. You
+    can run multiple isolated containers from the same image.
+-   **Layers and Layer Caching:** Every instruction in a `Dockerfile`
+    (`FROM`, `WORKDIR`, `COPY`, `RUN`) creates an immutable **layer**. Docker
+    caches these layers. If a layer and everything before it have not changed,
+    Docker reuses the cached layer on the next `docker build`.
+    -   *Interview tip:* Always copy `pyproject.toml` and `uv.lock` and install
+        dependencies **before** copying your application code (`src/` or
+        `app/`). Because your code changes frequently while dependencies
+        change rarely, this keeps rebuilds almost instant.
+-   **Port Binding (`-p <host_port>:<container_port>`):** A container has its
+    own isolated virtual network interface. Exposing port `5000` inside a
+    container does not automatically make it reachable from your laptop's
+    browser. Passing `-p 5000:5000` to `docker run` forwards traffic from port
+    `5000` on your host machine to port `5000` inside the container.
+-   **Listening on `0.0.0.0` vs. `127.0.0.1`:** By default, `flask run` and
+    `app.run()` bind to `127.0.0.1` (the loopback interface). Inside a
+    container, `127.0.0.1` means "only accept connections originating *from
+    inside this same container*". Traffic forwarded by Docker from the host
+    arrives on the container's external virtual network interface (`eth0`), so
+    the server **must** bind to `0.0.0.0` ("all network interfaces") to be
+    reachable from outside the container.
+-   **Volumes and Ephemeral Storage:** By default, a container's filesystem is
+    **ephemeral**—when the container is removed, any files written inside it
+    (such as a local SQLite `.db` file) are lost. To persist data across
+    container restarts, you mount a **Docker Volume** or a host directory into
+    the container, or connect to an external database service (like PostgreSQL).
+
+### 15.2 Create a `.dockerignore` file
+
+Before building an image, create a `.dockerignore` file in the project root.
+When you run `docker build .`, Docker sends the entire project directory (the
+**build context**) to the Docker daemon.
+
+Create `.dockerignore`:
+
+``` text
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.git/
+.gitignore
+*.db
+instance/
+README.md
+INSTRUCTIONS.md
+```
+
+**Why every line matters:**
+
+-   `.venv/`: Your local virtual environment was built for your host OS and CPU
+    paths. Copying it into a Linux container can break binaries and bloats the
+    image by hundreds of megabytes.
+-   `__pycache__/` and `*.pyc`: Compiled bytecode caches should be generated
+    fresh inside the container.
+-   `.git/`: Prevents copying repository history and potentially sensitive
+    local git metadata into the image.
+-   `*.db` and `instance/`: Prevents baking your local development SQLite
+    database into the production image.
+
+### 15.3 Write a `Dockerfile` (Development / Interview version)
+
+Create a `Dockerfile` in the root of the project:
+
+``` dockerfile
+# 1. Start from an official lightweight Python image that already includes uv
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+# 2. Set the working directory inside the container
+WORKDIR /app
+
+# 3. Environment variables to optimise Python and uv inside Docker
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+# 4. Copy dependency files first to leverage Docker layer caching
+COPY pyproject.toml uv.lock ./
+
+# 5. Install third-party dependencies using the exact versions in uv.lock
+RUN uv sync --frozen --no-dev --no-install-project
+
+# 6. Copy the rest of the application source code
+COPY . .
+
+# 7. Sync the project itself (needed if using a packaged src/ layout)
+RUN uv sync --frozen --no-dev
+
+# 8. Document the port the container listens on
+EXPOSE 5000
+
+# 9. Start the Flask application bound to all interfaces (0.0.0.0)
+CMD ["uv", "run", "flask", "--app", "api_train:app", "run", "--host=0.0.0.0", "--port=5000"]
+```
+
+*(Note: If your entry file is a standalone `app.py` or `run.py` instead of a
+`src/api_train` package, you can omit `--no-install-project` and step 7, and
+use `CMD ["uv", "run", "flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000"]`.)*
+
+### 15.4 Line-by-line explanation of the `Dockerfile`
+
+1.  **`FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim`**
+    -   Selects the base image. Astral provides official images with Python
+        3.12 and `uv` pre-installed on Debian Bookworm (`slim` variant).
+    -   Using `-slim` keeps the image small and reduces the security attack
+        surface by omitting unnecessary system packages.
+2.  **`WORKDIR /app`**
+    -   Creates `/app` inside the container and sets it as the current
+        working directory for all subsequent `COPY`, `RUN`, and `CMD`
+        instructions.
+3.  **`ENV ...`**
+    -   `PYTHONDONTWRITEBYTECODE=1`: Stops Python from writing `.pyc` files to
+        disk at runtime.
+    -   `PYTHONUNBUFFERED=1`: Forces `stdout` and `stderr` to be flushed
+        immediately so `print()` statements and Flask logs appear in
+        `docker logs` in real time instead of being buffered.
+    -   `UV_COMPILE_BYTECODE=1`: Tells `uv` to compile bytecode during
+        `uv sync` so container startup is faster.
+    -   `UV_LINK_MODE=copy`: Avoids hardlink warnings when `uv`'s cache and the
+        virtual environment live on different filesystems.
+4.  **`COPY pyproject.toml uv.lock ./`**
+    -   Copies only the dependency manifest and lockfile into `/app`. If you
+        edit your Python code later, this layer's checksum does not change.
+5.  **`RUN uv sync --frozen --no-dev --no-install-project`**
+    -   `--frozen`: Installs exact package versions from `uv.lock` and fails if
+        `uv.lock` is out of date with `pyproject.toml` (ensuring reproducible
+        builds).
+    -   `--no-dev`: Excludes development-only tools (`pytest`, `ruff`) from the
+        runtime image.
+    -   `--no-install-project`: Installs third-party libraries (like `flask`)
+        first before the project's own source code has been copied.
+6.  **`COPY . .`**
+    -   Copies your source code (`src/`, `app/`, etc.) into `/app` (respecting
+        `.dockerignore`).
+7.  **`RUN uv sync --frozen --no-dev`**
+    -   Installs your own package into the `.venv` quickly without
+        re-downloading third-party dependencies.
+8.  **`EXPOSE 5000`**
+    -   Metadata that documents that the container listens on TCP port `5000`.
+        It does **not** publish the port to the host by itself—you still pass
+        `-p 5000:5000` when running `docker run`.
+9.  **`CMD ["uv", "run", ...]`**
+    -   Uses the **exec form** (a JSON array of strings) to specify the default
+        command executed when a container starts.
+    -   *Interview tip:* Prefer the exec form `["executable", "arg1", ...]`
+        over the shell form `uv run ...` because the exec form runs the process
+        directly as PID 1 (or via `uv`) so it receives OS termination signals
+        (`SIGTERM`) cleanly when `docker stop` is called.
+
+### 15.5 Production readiness: WSGI server (`gunicorn`) and non-root user
+
+Flask's built-in server (`flask run` / `app.run()`) is a single-threaded
+development server and prints `WARNING: This is a development server. Do not use it in a production deployment.`
+
+In a production container (or if an interviewer asks *"What would you change in
+this Dockerfile before deploying to production?"*), highlight two improvements:
+
+1.  **Use a production WSGI server like `gunicorn`:**
+    Add Gunicorn with `uv add gunicorn` and start multiple worker processes to
+    handle concurrent requests safely:
+    ``` dockerfile
+    CMD ["uv", "run", "gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "api_train:app"]
+    ```
+    -   `-w 4`: Spawns 4 worker processes to handle requests concurrently.
+    -   `-b 0.0.0.0:5000`: Binds to port `5000` on all container interfaces.
+    -   `"api_train:app"` (or `"app:create_app()"` when using an application
+        factory): Tells Gunicorn how to import your Flask WSGI application.
+2.  **Run as a non-root user:**
+    By default, processes inside a Docker container run as `root`. Creating a
+    dedicated unprivileged user (`useradd --create-home appuser` and
+    `USER appuser`) limits the impact if a vulnerability is exploited.
+
+### 15.6 Build, run, and debug the container
+
+Build the image from the project root and tag (`-t`) it as `api-train`:
+
+``` bash
+docker build -t api-train .
+```
+
+Run the container in the foreground and map host port `5000` to container port
+`5000`:
+
+``` bash
+docker run --rm -p 5000:5000 api-train
+```
+
+-   `--rm`: Automatically deletes the stopped container when you press `Ctrl+C`
+    so old stopped containers do not clutter your machine.
+-   `-p 5000:5000`: Maps `<host_port>:<container_port>`. If port `5000` is busy
+    on your host machine, you can map `-p 8000:5000` and access the API at
+    `http://127.0.0.1:8000` without changing anything inside the container.
+
+Run in detached (background) mode and inspect logs:
+
+``` bash
+# Start in the background (-d) with a friendly name
+docker run -d --name api-train-container -p 5000:5000 api-train
+
+# View live logs (-f follows output)
+docker logs -f api-train-container
+
+# Open an interactive shell inside the running container for debugging
+docker exec -it api-train-container /bin/bash
+
+# Stop and remove the container
+docker stop api-train-container
+docker rm api-train-container
+```
+
+### 15.7 Multi-container setup with `docker compose`
+
+When an application needs both an API container and a database (or when you want
+to avoid typing long `docker run` commands), use a `compose.yaml` (or
+`docker-compose.yml`) file:
+
+``` yaml
+services:
+  api:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=sqlite:////data/products.db
+    volumes:
+      - sqlite_data:/data
+
+volumes:
+  sqlite_data:
+```
+
+Run and stop with Docker Compose:
+
+``` bash
+# Build (if needed) and start containers
+docker compose up --build
+
+# Stop and remove containers (keep named volumes)
+docker compose down
+```
+
+### 15.8 Common Docker interview questions and strong answers
+
+-   **"Why does my Flask app work locally, start fine in Docker, but give
+    `Connection reset` or `Connection refused` from the host browser?"**
+    > "Flask defaults to binding to `127.0.0.1`, which inside a container only
+    > accepts loopback connections from inside that same container. Binding
+    > Flask or Gunicorn to `0.0.0.0` allows it to accept traffic forwarded by
+    > Docker from the host."
+-   **"How do you keep Docker builds fast and images small?"**
+    > "Use a slim base image (`python3.12-bookworm-slim`), add a `.dockerignore`
+    > so `.venv` and `.git` are excluded, copy `pyproject.toml` and `uv.lock`
+    > before copying the source code so dependency installation is cached by
+    > Docker's layer cache, and pass `--no-dev` so test dependencies aren't
+    > installed in production."
+-   **"How should secrets or database URLs be passed to a Docker container?"**
+    > "Never hardcode secrets in code or bake `.env` files into the `Dockerfile`.
+    > Pass configuration at runtime using environment variables (`docker run -e`
+    > or ` --env-file`, Docker Compose `environment`, or a secrets manager in
+    > production) and read them in Python with `os.environ.get()`."
+
+------------------------------------------------------------------------
+
+## 16. Python concepts to revise
 
 These are common Python concepts worth practising before a live coding
 exercise.
 
-### 15.1 Dictionaries
+### 16.1 Dictionaries
 
 ``` python
 product = {
@@ -1685,7 +1975,7 @@ price = product.get("price")
 -   `product.get("name")` returns `None` by default if the key is
     missing.
 
-### 15.2 Lists and comprehensions
+### 16.2 Lists and comprehensions
 
 ``` python
 products = [
@@ -1696,7 +1986,7 @@ products = [
 names = [product["name"] for product in products]
 ```
 
-### 15.3 Functions and return values
+### 16.3 Functions and return values
 
 ``` python
 def calculate_total(price, quantity):
@@ -1706,7 +1996,7 @@ def calculate_total(price, quantity):
 Keep functions focused. A validation helper should validate; a route
 should coordinate the request and response.
 
-### 15.4 Exceptions
+### 16.4 Exceptions
 
 ``` python
 try:
@@ -1718,7 +2008,7 @@ except ValueError:
 Use exceptions for exceptional conditions and handle expected invalid
 user input deliberately.
 
-### 15.5 Type hints
+### 16.5 Type hints
 
 ``` python
 def get_product_name(product: dict) -> str:
@@ -1728,7 +2018,7 @@ def get_product_name(product: dict) -> str:
 Type hints make intentions clearer and can help tools catch mistakes.
 They do not automatically validate incoming JSON at runtime.
 
-### 15.6 `None` and truthiness
+### 16.6 `None` and truthiness
 
 ``` python
 value = None
@@ -1741,7 +2031,7 @@ Prefer `is None` when checking specifically for `None`. Do not confuse a
 missing value with valid values such as `0`, `False`, or an empty
 string.
 
-### 15.7 `*args` and `**kwargs`
+### 16.7 `*args` and `**kwargs`
 
 -   `*args` collects extra positional arguments.
 -   `**kwargs` collects extra keyword arguments.
@@ -1758,7 +2048,7 @@ create_record(name="Keyboard", price=79.99)
 In the SQLAlchemy example, `Product(**cleaned)` passes the dictionary
 entries as keyword arguments to the model constructor.
 
-### 15.8 Mutable data
+### 16.8 Mutable data
 
 Dictionaries and lists can be changed in place:
 
@@ -1781,12 +2071,12 @@ This matters when writing tests and updating nested data.
 
 ------------------------------------------------------------------------
 
-## 16. Live-coding approach and communication
+## 17. Live-coding approach and communication
 
 The interviewer is assessing how you work, not just whether you can type
 quickly.
 
-### 16.1 Start by clarifying the task
+### 17.1 Start by clarifying the task
 
 Before coding, ask questions such as:
 
@@ -1801,7 +2091,7 @@ Before coding, ask questions such as:
 Do not ask every question mechanically. Ask the questions that affect
 your implementation.
 
-### 16.2 Repeat your understanding
+### 17.2 Repeat your understanding
 
 For example:
 
@@ -1812,7 +2102,7 @@ For example:
 
 This gives the interviewer a chance to correct your interpretation.
 
-### 16.3 Work in small increments
+### 17.3 Work in small increments
 
 A useful order is:
 
@@ -1829,7 +2119,7 @@ A useful order is:
 Avoid writing a large amount of code before running it for the first
 time.
 
-### 16.4 Narrate your reasoning
+### 17.4 Narrate your reasoning
 
 You do not need to talk constantly. Explain important decisions:
 
@@ -1843,7 +2133,7 @@ You do not need to talk constantly. Explain important decisions:
 -   "I would add pagination if this endpoint needed to handle a large
     collection."
 
-### 16.5 When you get stuck
+### 17.5 When you get stuck
 
 Use this sequence:
 
@@ -1858,7 +2148,7 @@ If you do not know something, say so clearly and explain how you would
 investigate it. Do not pretend to know an API or library behaviour you
 are unsure about.
 
-### 16.6 Avoid overengineering
+### 17.6 Avoid overengineering
 
 Do not start by adding:
 
@@ -1874,7 +2164,7 @@ would extend the solution.
 
 ------------------------------------------------------------------------
 
-## 17. Three-day preparation plan
+## 18. Three-day preparation plan
 
 Adjust the hours to your energy and schedule. The goal is deliberate
 practice, not staying up all night.
@@ -1944,7 +2234,7 @@ fluency, sleep, and being able to explain your choices.
 
 ------------------------------------------------------------------------
 
-## 18. Practice exercises
+## 19. Practice exercises
 
 Try these without looking at the solutions first.
 
@@ -2033,10 +2323,12 @@ Without looking at the guide, explain:
 6.  Why use an application factory?
 7.  How would you test a route?
 8.  What would you improve if the API needed to support many users?
+9.  How does Docker layer caching work when installing dependencies with `uv`?
+10. Why must a Flask server inside Docker listen on `0.0.0.0` instead of `127.0.0.1`?
 
 ------------------------------------------------------------------------
 
-## 19. Interview-day checklist
+## 20. Interview-day checklist
 
 ### Before the interview
 
@@ -2077,7 +2369,7 @@ Without looking at the guide, explain:
 
 ------------------------------------------------------------------------
 
-## 20. Quick reference
+## 21. Quick reference
 
 ### Start a new project
 
@@ -2112,6 +2404,13 @@ uv run python run.py
 ``` bash
 uv run pytest -v
 uv run ruff check .
+```
+
+### Build and run with Docker
+
+``` bash
+docker build -t api-train .
+docker run --rm -p 5000:5000 api-train
 ```
 
 ### Run a basic endpoint test
