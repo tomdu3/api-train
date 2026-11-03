@@ -1,15 +1,15 @@
-# GET /products returns a list of all products
-GET http://localhost:5000/products
+# GET /api/v1/products returns a list of all products
+GET http://localhost:5000/api/v1/products
 
 ###
 
-# GET /products/<id> returns a specific product by ID
-GET http://localhost:5000/products/1
+# GET /api/v1/products/<id> returns a specific product by ID
+GET http://localhost:5000/api/v1/products/1
 
 ###
 
-# POST /products creates a new product
-POST http://localhost:5000/products
+# POST /api/v1/products creates a new product
+POST http://localhost:5000/api/v1/products
 Content-Type: application/json
 
 {
@@ -46,6 +46,6 @@ Content-Type: application/json
 ###
 
 # DELETE /products/<id> deletes a specific product by ID
-DELETE http://localhost:5000/products/10
+DELETE http://localhost:5000/api/v1/products/16
 
 ###

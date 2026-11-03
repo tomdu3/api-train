@@ -3,6 +3,14 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, jsonify, request
 from api_train import db
 from api_train.models import Product
+from api_train.helper import (
+    validate_name,
+    validate_description,
+    validate_price,
+    validate_in_stock,
+    validate_product,
+    validate_properties_exist,
+)
 # from api_train.old_db import next_product_id, products
 
 products_bp = Blueprint("products", __name__, url_prefix="/api/v1")
@@ -36,52 +44,23 @@ def get_products_by_id(product_id):
     return jsonify(product.to_dict()), 200
 
 
-# @products_bp.post("/products/")
-# def add_products():
-#     global next_product_id
+@products_bp.post("/products/")
+def add_products():
 
-#     data = request.get_json(silent=True)
+    data = request.get_json(silent=True)
 
-#     if not isinstance(data, dict):
-#         return jsonify({"error": "Request body must be a JSON object"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-#     name = data.get("name")
-#     description = data.get("description")
-#     price = data.get("price")
-#     in_stock = data.get("in_stock", True)
+    cleaned, error = validate_product(data)
+    if error:
+        return jsonify({"error": error}), 400
 
-#     if (
-#         not isinstance(name, str)
-#         or not name.strip()
-#         or not re.match(r"^[A-Za-z0-9 ]+$", name)
-#     ):
-#         return jsonify(
-#             {
-#                 "error": "Product name is required and must contain only letters and numbers and spaces"
-#             }
-#         ), 400
+    product = Product(**cleaned)
+    db.session.add(product)
+    db.session.commit()
 
-#     if not isinstance(description, str):
-#         return jsonify({"error": "Description must be a string"}), 400
-
-#     if isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0:
-#         return jsonify({"error": "Price must be a positive number"}), 400
-
-#     if not isinstance(in_stock, bool):
-#         return jsonify({"error": "In stock must be a boolean"}), 400
-
-#     product = {
-#         "id": next_product_id,
-#         "name": name.strip(),
-#         "description": description,
-#         "price": float(price),
-#         "in_stock": in_stock,
-#     }
-
-#     products[next_product_id] = product
-#     next_product_id += 1
-
-#     return jsonify(product), 201
+    return jsonify(product.to_dict()), 201
 
 
 # @products_bp.put("/products/<int:product_id>")
@@ -186,14 +165,22 @@ def get_products_by_id(product_id):
 #     return jsonify(product), 200
 
 
-# @products_bp.delete("/products/<int:product_id>")
-# def delete_product(product_id):
-#     if product_id not in products:
-#         return jsonify({"error": "Product not found"}), 404
-#     product = products[product_id]
-#     del products[product_id]
-#     return jsonify(
-#         {
-#             "message": f"Product - id:{product.get('id')} | name: {product.get('name')}, successfully deleted"
-#         }
-#     ), 200
+@products_bp.delete("/products/<int:product_id>")
+def delete_product(product_id):
+    query = db.session.execute(db.select(Product).where(Product.id == product_id))
+    product = query.scalar()
+    if product is None:
+        return jsonify({"error": "Product not found"}), 404
+
+    try:
+        db.session.delete(product)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(
+        {
+            "message": f"Product - id:{product_id} | name: {product.name}, successfully deleted"
+        }
+    ), 200
