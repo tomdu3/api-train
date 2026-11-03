@@ -252,6 +252,11 @@ def update_product(product_id):
     if product_id not in products:
         return jsonify({"error": "Product not found"}), 404
 
+    # check if an invalid propery is used for update
+    for key in data:
+        if key not in ["name", "description", "price", "in_stock"]:
+            return jsonify({"error": f"Invalid property: {key}"}), 400
+
     product = products.get(product_id)
     name = data.get("name", None)
     description = data.get("description", None)

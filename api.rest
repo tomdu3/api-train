@@ -39,7 +39,8 @@ Content-Type: application/json
 
 {
     "name": "Some cool name",
-    "description": "Cool description"
+    "description": "Cool description",
+    "hello": "world"
 }
 
 ###
