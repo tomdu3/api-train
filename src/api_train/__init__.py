@@ -1,4 +1,30 @@
 from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+
+db = SQLAlchemy()
+
+
+def create_app(test_config=None):
+    app = Flask(__name__)
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///products.db"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    if test_config is not None:
+        app.config.update(test_config)
+
+    db.init_app(app)
+
+    from api_train.routes import products_bp
+
+    app.register_bluepring(products_bp)
+
+    with app.app_context():
+        db.create_all()
+
+    return app
+
 
 # Flask application instance
 app = Flask(__name__)
