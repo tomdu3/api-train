@@ -1,8 +1,9 @@
 from api_train import db
+import uuid
 
 
 class Product(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.String(36), default=lambda: str(uuid.uuid4()), primary_key=True)
     name = db.Column(db.String(50), nullable=False)
     description = db.Column(db.String(200))
     price = db.Column(db.Numeric(10, 2), nullable=False)

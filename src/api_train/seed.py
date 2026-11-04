@@ -13,12 +13,7 @@ def seed_database() -> None:
 
         inserted_count = 0
         for item in products.values():
-            # Skip if a product with this ID already exists in the database
-            if db.session.get(Product, item["id"]) is not None:
-                continue
-
             product = Product(
-                id=item.get("id"),
                 name=item.get("name"),
                 description=item.get("description"),
                 price=Decimal(str(item.get("price"))),
