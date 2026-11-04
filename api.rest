@@ -22,25 +22,25 @@ Content-Type: application/json
 ###
 
 # PUT /products/<id> updates a specific product by ID
-PUT http://localhost:5000/products/10
+PUT http://localhost:5000/api/v1/products/4
 Content-Type: application/json
 
-{
-    "name": "Product 1",
-    "description": "Description 1",
-    "price": 10.00
-}
+ {
+    "description": "1080p webcam",
+    "in_stock": false,
+    "name": "Webcam",
+    "price": 49.99
+  }
 
 ###
 
 # PATCH /products/<id> updates a specific product by ID
-PATCH http://localhost:5000/products/10
+PATCH http://localhost:5000/api/v1/products/10
 Content-Type: application/json
 
 {
     "name": "Some cool name",
-    "description": "Cool description",
-    "hello": "world"
+    "description": "Cool description"
 }
 
 ###

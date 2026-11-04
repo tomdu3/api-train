@@ -9,7 +9,8 @@ from api_train.helper import (
     validate_price,
     validate_in_stock,
     validate_product,
-    validate_properties_exist,
+    invalid_properties_check,
+    validate_partial_properties,
 )
 # from api_train.old_db import next_product_id, products
 
@@ -28,7 +29,12 @@ def health_check():
 def get_products():
     query = db.select(Product)
     in_stock_filter = request.args.get("in_stock", None)
+
     if in_stock_filter is not None:
+        if in_stock_filter.lower() not in ["true", "false"]:
+            return jsonify(
+                {"error": "`in_stock` value must be boolean true or false"}
+            ), 400
         in_stock_bool = in_stock_filter.lower() == "true"
         query = query.where(Product.in_stock == in_stock_bool)
 
@@ -63,106 +69,60 @@ def add_products():
     return jsonify(product.to_dict()), 201
 
 
-# @products_bp.put("/products/<int:product_id>")
-# def replace_product(product_id):
-#     data = request.get_json()
+@products_bp.put("/products/<int:product_id>")
+def replace_product(product_id):
+    data = request.get_json()
 
-#     if not isinstance(data, dict):
-#         return jsonify({"error": "Request body must be a JSON object"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-#     if product_id not in products:
-#         return jsonify({"error": "Product not found"}), 404
+    product = db.session.get(Product, product_id)
+    if product is None:
+        return jsonify({"error": "Product not found"}), 404
 
-#     name = data.get("name")
-#     description = data.get("description")
-#     price = data.get("price")
-#     in_stock = data.get("in_stock", True)
+    cleaned, error = validate_product(data)
+    if error:
+        return jsonify({"error": error}), 400
 
-#     if (
-#         not isinstance(name, str)
-#         or not name.strip()
-#         or not re.match(r"^[A-Za-z0-9 ]+$", name)
-#     ):
-#         return jsonify(
-#             {
-#                 "error": "Name is required and must contain only letters and numbers and spaces"
-#             }
-#         ), 400
+    product.name = cleaned["name"]
+    product.description = cleaned["description"]
+    product.price = cleaned["price"]
+    product.in_stock = cleaned["in_stock"]
 
-#     if not isinstance(description, str):
-#         return jsonify({"error": "Description must be a string"}), 400
+    db.session.commit()
 
-#     if isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0:
-#         return jsonify({"error": "Price must be a positive number"}), 400
-
-#     if not isinstance(in_stock, bool):
-#         return jsonify({"error": "In stock must be a boolean"}), 400
-
-#     product = {
-#         "id": product_id,
-#         "name": name.strip(),
-#         "description": description,
-#         "price": float(price),
-#         "in_stock": in_stock,
-#     }
-
-#     products[product_id] = product
-
-#     return jsonify(product), 200
+    return jsonify(product.to_dict()), 200
 
 
-# @products_bp.patch("/products/<int:product_id>")
-# def update_product(product_id):
-#     data = request.get_json()
+@products_bp.patch("/products/<int:product_id>")
+def update_product(product_id):
+    data = request.get_json()
 
-#     if not isinstance(data, dict):
-#         return jsonify({"error": "Request body must be a JSON object"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
-#     if product_id not in products:
-#         return jsonify({"error": "Product not found"}), 404
+    product = db.session.get(Product, product_id)
+    if product is None:
+        return jsonify({"error": "Product not found"}), 404
 
-#     # check if an invalid propery is used for update
-#     for key in data:
-#         if key not in ["name", "description", "price", "in_stock"]:
-#             return jsonify({"error": f"Invalid property: {key}"}), 400
+    # check if an invalid propery is used for update
+    invalid_properties = invalid_properties_check(data)
+    if invalid_properties:
+        return jsonify(
+            {"error": f"Invalid properties: {', '.join(invalid_properties)}"}
+        ), 400
+    # update the product properties if the property is valid and not empty
+    for key, value in data.items():
+        if value is None:
+            return jsonify({"error": f"Value for {key} cannot be empty"}), 400
 
-#     product = products.get(product_id)
-#     name = data.get("name", None)
-#     description = data.get("description", None)
-#     price = data.get("price", None)
-#     in_stock = data.get("in_stock", None)
+    product, error = validate_partial_properties(product, data)
+    if error:
+        return jsonify({"error": error}), 400
 
-#     if name is not None:
-#         if (
-#             not isinstance(name, str)
-#             or not name.strip()
-#             or not re.match(r"^[A-Za-z0-9 ]+$", name)
-#         ):
-#             return jsonify(
-#                 {
-#                     "error": "Name is required and must contain only letters and numbers and spaces"
-#                 }
-#             ), 400
-#         product["name"] = name.strip()
+    db.session.commit()
 
-#     if description is not None:
-#         if not isinstance(description, str):
-#             return jsonify({"error": "Description must be a string"}), 400
-#         product["description"] = description
-
-#     if price is not None:
-#         if isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0:
-#             return jsonify({"error": "Price must be a positive number"}), 400
-#         product["price"] = float(price)
-
-#     if in_stock is not None:
-#         if not isinstance(in_stock, bool):
-#             return jsonify({"error": "In stock must be a boolean"}), 400
-#         product["in_stock"] = in_stock
-
-#     products[product_id] = product
-
-#     return jsonify(product), 200
+    return jsonify(product.to_dict()), 200
 
 
 @products_bp.delete("/products/<int:product_id>")

@@ -68,12 +68,40 @@ def validate_product(data):
     return cleaned, None
 
 
-def validate_properties_exist(data):
+def invalid_properties_check(data):
     """Check if the request body contains any valid properties."""
     allowed_properties = {"name", "description", "price", "in_stock"}
+    invalid_properties = []
 
     for prop in data:
         if prop.lower() in allowed_properties:
-            return None, None
+            continue
+        else:
+            invalid_properties.append(prop)
 
-    return None, "No valid properties provided"
+    return invalid_properties if invalid_properties else None
+
+
+def validate_partial_properties(product, data):
+    # validate each property
+    if "name" in data:
+        name, error = validate_name(data.get("name"))
+        if error:
+            return None, error
+        product.name = name
+    if "description" in data:
+        description, error = validate_description(data.get("description"))
+        if error:
+            return None, error
+        product.description = description
+    if "price" in data:
+        price, error = validate_price(data.get("price"))
+        if error:
+            return None, error
+        product.price = price
+    if "in_stock" in data:
+        in_stock, error = validate_in_stock(data.get("in_stock"))
+        if error:
+            return None, error
+        product.in_stock = in_stock
+    return product, None
