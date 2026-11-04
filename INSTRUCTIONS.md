@@ -39,13 +39,14 @@ Python REST API during a live coding interview.
 13. [Useful API improvements](#13-useful-api-improvements)
 14. [Connect a frontend to the API](#14-connect-a-frontend-to-the-api)
 15. [Containerise the API with Docker](#15-containerise-the-api-with-docker)
-16. [Python concepts to revise](#16-python-concepts-to-revise)
-17. [Live-coding approach and
-    communication](#17-live-coding-approach-and-communication)
-18. [Three-day preparation plan](#18-three-day-preparation-plan)
-19. [Practice exercises](#19-practice-exercises)
-20. [Interview-day checklist](#20-interview-day-checklist)
-21. [Quick reference](#21-quick-reference)
+16. [Additional production steps: PostgreSQL, UUIDs, Users, and JWT](#16-additional-production-steps-postgresql-uuids-users-and-jwt)
+17. [Python concepts to revise](#17-python-concepts-to-revise)
+18. [Live-coding approach and
+    communication](#18-live-coding-approach-and-communication)
+19. [Three-day preparation plan](#19-three-day-preparation-plan)
+20. [Practice exercises](#20-practice-exercises)
+21. [Interview-day checklist](#21-interview-day-checklist)
+22. [Quick reference](#22-quick-reference)
 
 ------------------------------------------------------------------------
 
@@ -1953,12 +1954,450 @@ docker compose down
 
 ------------------------------------------------------------------------
 
-## 16. Python concepts to revise
+## 16. Additional production steps: PostgreSQL, UUIDs, Users, and JWT
+
+Once your core CRUD API works with SQLite, interviewers often ask how you would
+evolve it toward a production-ready multi-user service, or give you a follow-up
+task to add **PostgreSQL**, **UUID primary keys**, **user registration with
+password hashing**, or **JWT authentication**.
+
+---
+
+### 16.1 Switch from SQLite to PostgreSQL
+
+Because your routes and models use **SQLAlchemy** (an ORM), switching from
+SQLite to PostgreSQL requires **zero changes** to your route logic or model
+definitions.
+
+#### Step 1: Install the PostgreSQL driver
+
+SQLite is included in Python's standard library, whereas PostgreSQL requires a
+driver (`psycopg` v3):
+
+``` bash
+uv add "psycopg[binary]"
+```
+
+#### Step 2: Configure `SQLALCHEMY_DATABASE_URI` via an environment variable
+
+Update `create_app()` in `src/api_train/__init__.py` so it reads `DATABASE_URL`
+from the environment and falls back to SQLite (or local Postgres) when unset:
+
+``` python
+import os
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+
+def create_app(test_config=None):
+    app = Flask(__name__)
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+psycopg://postgres:postgres@localhost:5432/products_db",
+    )
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    if test_config is not None:
+        app.config.update(test_config)
+
+    db.init_app(app)
+    ...
+```
+
+**Connection URI anatomy:**
+`postgresql+psycopg://<username>:<password>@<host>:<port>/<database_name>`
+
+#### Step 3: Start a local PostgreSQL instance with Docker
+
+You do not need to install PostgreSQL directly on your host OS—run it in a
+container:
+
+``` bash
+docker run -d \
+  --name api-train-postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=products_db \
+  -p 5432:5432 \
+  postgres:16-alpine
+```
+
+#### Interview concepts: SQLite vs. PostgreSQL
+
+-   **Concurrency:** SQLite stores the entire database in a single file and
+    locks the file during writes, so only one writer can proceed at a time.
+    PostgreSQL is a client-server database that uses **MVCC (Multi-Version
+    Concurrency Control)** so many clients can read and write concurrently
+    without blocking each other.
+-   **Auto-increment sequences when seeding:** In PostgreSQL, if you insert rows
+    with explicit integer IDs (`id=1..15`), PostgreSQL's internal sequence does
+    not automatically advance. Omit `id` when seeding so Postgres generates the
+    IDs automatically, or use UUIDs.
+
+---
+
+### 16.2 Use UUIDs instead of progressive integer IDs
+
+#### Why use UUIDs? (Interview explanation)
+
+-   **Prevents ID enumeration / IDOR attacks:** With progressive IDs (`1, 2, 3`),
+    anyone can guess `/api/v1/products/4` or `/api/v1/users/2` and scrape or
+    probe every record in your system, and competitors can estimate how many
+    records you have. A **UUID v4** (`"f47ac10b-58cc-4372-a567-0e02b2c3d479"`)
+    is 128 bits of randomness and is practically impossible to guess.
+-   **Distributed generation:** UUIDs can be generated in Python (`uuid.uuid4()`)
+    before touching the database, avoiding sequence collisions across multiple
+    databases or services.
+-   **Trade-off to mention:** UUIDs take more storage (16 bytes binary or 36
+    characters as a string vs. 4–8 bytes for an integer) and random UUIDv4
+    values can cause slightly more B-tree index fragmentation than sequential
+    integers (which is why **UUIDv7**—time-ordered UUIDs—is becoming popular).
+
+#### Step 1: Update the `Product` model to use a UUID primary key
+
+Using `db.String(36)` with `default=lambda: str(uuid.uuid4())` works seamlessly
+on **both** SQLite and PostgreSQL:
+
+``` python
+import uuid
+from api_train import db
+
+
+class Product(db.Model):
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    name = db.Column(db.String(50), nullable=False)
+    description = db.Column(db.String(200))
+    price = db.Column(db.Numeric(10, 2), nullable=False)
+    in_stock = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "price": str(self.price),
+            "in_stock": self.in_stock,
+        }
+```
+
+> **Critical detail:** Notice `default=lambda: str(uuid.uuid4())` has **no
+> parentheses** after `lambda`. If you wrote `default=str(uuid.uuid4())`, Python
+> would call `uuid4()` **once** when the file is imported and try to give every
+> product the exact same ID! Passing a callable (`lambda`) makes SQLAlchemy
+> generate a fresh UUID for every new row.
+
+#### Step 2: Update the Flask route converters
+
+Flask has a built-in `<uuid:product_id>` converter that automatically validates
+that the URL segment is a valid UUID (returning `404` automatically if someone
+passes `/api/v1/products/not-a-uuid`) and passes a `uuid.UUID` object to your
+function:
+
+``` python
+@products_bp.get("/products/<uuid:product_id>")
+def get_products_by_id(product_id):
+    product = db.session.get(Product, str(product_id))
+    if product is None:
+        return jsonify({"error": "Product not found"}), 404
+    return jsonify(product.to_dict()), 200
+```
+
+Apply the same `<uuid:product_id>` and `str(product_id)` to your `PUT`, `PATCH`,
+and `DELETE` routes.
+
+---
+
+### 16.3 Implement a `User` table with hashed passwords
+
+#### Hashing vs. Encryption (Crucial interview distinction)
+
+Even if a prompt says "encrypted password", in an interview you should clarify:
+> "Passwords should never be stored in plain text or with reversible encryption—
+> they must be stored using a **one-way cryptographic password hash with a
+> random salt** (such as `scrypt`, `Argon2`, `bcrypt`, or `PBKDF2`). That way,
+> even if the database is leaked, attackers cannot decrypt the passwords."
+
+Flask already includes `generate_password_hash` and `check_password_hash` via
+`werkzeug.security` (which uses salted `scrypt` by default)—so you don't even
+need to install an extra library!
+
+#### Step 1: Define the `User` model in `models.py`
+
+``` python
+import uuid
+from werkzeug.security import check_password_hash, generate_password_hash
+from api_train import db
+
+
+class User(db.Model):
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    username = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(256), nullable=False)
+
+    def set_password(self, raw_password: str) -> None:
+        """Hash and salt the plain-text password before storing it."""
+        self.password_hash = generate_password_hash(raw_password)
+
+    def check_password(self, raw_password: str) -> bool:
+        """Verify a plain-text password against the stored hash."""
+        return check_password_hash(self.password_hash, raw_password)
+
+    def to_dict(self) -> dict:
+        # NEVER include password_hash in to_dict()!
+        return {
+            "id": self.id,
+            "username": self.username,
+            "email": self.email,
+        }
+```
+
+#### Step 2: Create a User Registration endpoint (`POST /api/v1/auth/register`)
+
+``` python
+auth_bp = Blueprint("auth", __name__, url_prefix="/api/v1/auth")
+
+
+@auth_bp.post("/register")
+def register():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    username = data.get("username")
+    email = data.get("email")
+    password = data.get("password")
+
+    if not isinstance(username, str) or not username.strip():
+        return jsonify({"error": "Username is required"}), 400
+    if not isinstance(email, str) or "@" not in email:
+        return jsonify({"error": "Valid email is required"}), 400
+    if not isinstance(password, str) or len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+
+    # Check if username or email is already taken
+    existing_user = db.session.execute(
+        db.select(User).where(
+            (User.username == username.strip()) | (User.email == email.strip().lower())
+        )
+    ).scalar()
+
+    if existing_user is not None:
+        return jsonify({"error": "Username or email already exists"}), 409
+
+    user = User(
+        username=username.strip(),
+        email=email.strip().lower(),
+    )
+    user.set_password(password)
+
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify(user.to_dict()), 201
+```
+
+*(Note the `409 Conflict` status code when a unique constraint like `username`
+or `email` already exists!)*
+
+---
+
+### 16.4 Implement JWT Authentication
+
+#### Core JWT concepts for the interview
+
+-   **What is a JWT (JSON Web Token)?** A compact, URL-safe token made of three
+    Base64URL-encoded parts separated by dots: `Header.Payload.Signature`.
+    1.  **Header:** Algorithm and token type (e.g. `{"alg": "HS256", "typ": "JWT"}`).
+    2.  **Payload (Claims):** Data about the user, such as `sub` (subject / user ID),
+        `iat` (issued at), and `exp` (expiration timestamp). **Important:** The
+        payload is Base64-encoded, *not encrypted*—anyone can decode and read it,
+        so never put passwords or secrets inside a JWT payload!
+    3.  **Signature:** Created by signing `Header + Payload` with your server's
+        `JWT_SECRET_KEY`. If a client tampers with the payload (for example,
+        changing their `sub` user ID), the signature check fails and the server
+        rejects the token with `401 Unauthorized`.
+-   **Stateless authentication:** Unlike server-side sessions (where the server
+    must look up a session ID in memory or Redis on every request), a JWT is
+    self-contained. The server only needs to verify the cryptographic signature
+    and expiration timestamp.
+
+#### Step 1: Install `flask-jwt-extended`
+
+``` bash
+uv add flask-jwt-extended
+```
+
+#### Step 2: Configure `JWTManager` in `create_app()` (`__init__.py`)
+
+``` python
+import os
+from datetime import timedelta
+from flask import Flask
+from flask_jwt_extended import JWTManager
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+jwt = JWTManager()
+
+
+def create_app(test_config=None):
+    app = Flask(__name__)
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+        "DATABASE_URL", "sqlite:///products.db"
+    )
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    # Secret key used to sign JWTs (always use an environment variable in production!)
+    app.config["JWT_SECRET_KEY"] = os.environ.get(
+        "JWT_SECRET_KEY", "dev-secret-key-change-in-production"
+    )
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
+
+    if test_config is not None:
+        app.config.update(test_config)
+
+    db.init_app(app)
+    jwt.init_app(app)
+
+    from api_train.routes import auth_bp, health_bp, products_bp
+
+    app.register_blueprint(products_bp)
+    app.register_blueprint(health_bp)
+    app.register_blueprint(auth_bp)
+
+    with app.app_context():
+        db.create_all()
+
+    return app
+```
+
+#### Step 3: Create the Login endpoint (`POST /api/v1/auth/login`)
+
+When a user logs in with a valid email/username and password, issue a signed JWT
+using `create_access_token(identity=user.id)`:
+
+``` python
+from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
+
+
+@auth_bp.post("/login")
+def login():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    username = data.get("username")
+    password = data.get("password")
+
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify({"error": "Username and password are required"}), 400
+
+    user = db.session.execute(
+        db.select(User).where(User.username == username.strip())
+    ).scalar()
+
+    # Return the same generic 401 message whether the username or password was wrong
+    # so attackers cannot enumerate valid usernames!
+    if user is None or not user.check_password(password):
+        return jsonify({"error": "Invalid username or password"}), 401
+
+    access_token = create_access_token(identity=str(user.id))
+    return jsonify({"access_token": access_token, "user": user.to_dict()}), 200
+```
+
+#### Step 4: Protect routes with `@jwt_required()`
+
+Add `@jwt_required()` below the route decorator on any endpoint that requires
+authentication (for example, creating, updating, or deleting a product, or
+fetching the current user's profile):
+
+``` python
+@auth_bp.get("/me")
+@jwt_required()
+def get_current_user():
+    current_user_id = get_jwt_identity()
+    user = db.session.get(User, current_user_id)
+    if user is None:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify(user.to_dict()), 200
+
+
+@products_bp.post("/products/")
+@jwt_required()
+def add_products():
+    # Only authenticated users with a valid Bearer token reach this code
+    current_user_id = get_jwt_identity()
+    ...
+```
+
+#### Step 5: Test the JWT flow in `api.rest` or `curl`
+
+1.  **Register a user (`POST /api/v1/auth/register`)**:
+    ``` http
+    POST http://localhost:5000/api/v1/auth/register
+    Content-Type: application/json
+
+    {
+        "username": "tom",
+        "email": "tom@example.com",
+        "password": "supersecretpassword"
+    }
+    ```
+2.  **Log in to get an `access_token` (`POST /api/v1/auth/login`)**:
+    ``` http
+    POST http://localhost:5000/api/v1/auth/login
+    Content-Type: application/json
+
+    {
+        "username": "tom",
+        "password": "supersecretpassword"
+    }
+    ```
+3.  **Call a protected endpoint with the `Authorization: Bearer <token>` header**:
+    ``` http
+    POST http://localhost:5000/api/v1/products/
+    Content-Type: application/json
+    Authorization: Bearer <paste_your_access_token_here>
+
+    {
+        "name": "Protected Product",
+        "description": "Created by an authenticated user",
+        "price": 49.99,
+        "in_stock": true
+    }
+    ```
+
+#### Important HTTP Status Codes for Auth (`401` vs. `403`)
+
+Interviewers love asking the difference between `401` and `403`:
+-   **`401 Unauthorized` (Unauthenticated):** "I don't know who you are." The
+    request is missing a token, the token is expired/invalid, or the username/password
+    was wrong.
+-   **`403 Forbidden` (Unauthorized):** "I know who you are, Input token is valid,
+    but you do not have permission to perform this action" (for example, a normal
+    user trying to `DELETE` a product that requires an `admin` role).
+
+------------------------------------------------------------------------
+
+## 17. Python concepts to revise
 
 These are common Python concepts worth practising before a live coding
 exercise.
 
-### 16.1 Dictionaries
+### 17.1 Dictionaries
 
 ``` python
 product = {
@@ -1975,7 +2414,7 @@ price = product.get("price")
 -   `product.get("name")` returns `None` by default if the key is
     missing.
 
-### 16.2 Lists and comprehensions
+### 17.2 Lists and comprehensions
 
 ``` python
 products = [
@@ -1986,7 +2425,7 @@ products = [
 names = [product["name"] for product in products]
 ```
 
-### 16.3 Functions and return values
+### 17.3 Functions and return values
 
 ``` python
 def calculate_total(price, quantity):
@@ -1996,7 +2435,7 @@ def calculate_total(price, quantity):
 Keep functions focused. A validation helper should validate; a route
 should coordinate the request and response.
 
-### 16.4 Exceptions
+### 17.4 Exceptions
 
 ``` python
 try:
@@ -2008,7 +2447,7 @@ except ValueError:
 Use exceptions for exceptional conditions and handle expected invalid
 user input deliberately.
 
-### 16.5 Type hints
+### 17.5 Type hints
 
 ``` python
 def get_product_name(product: dict) -> str:
@@ -2018,7 +2457,7 @@ def get_product_name(product: dict) -> str:
 Type hints make intentions clearer and can help tools catch mistakes.
 They do not automatically validate incoming JSON at runtime.
 
-### 16.6 `None` and truthiness
+### 17.6 `None` and truthiness
 
 ``` python
 value = None
@@ -2031,7 +2470,7 @@ Prefer `is None` when checking specifically for `None`. Do not confuse a
 missing value with valid values such as `0`, `False`, or an empty
 string.
 
-### 16.7 `*args` and `**kwargs`
+### 17.7 `*args` and `**kwargs`
 
 -   `*args` collects extra positional arguments.
 -   `**kwargs` collects extra keyword arguments.
@@ -2048,7 +2487,7 @@ create_record(name="Keyboard", price=79.99)
 In the SQLAlchemy example, `Product(**cleaned)` passes the dictionary
 entries as keyword arguments to the model constructor.
 
-### 16.8 Mutable data
+### 17.8 Mutable data
 
 Dictionaries and lists can be changed in place:
 
@@ -2071,12 +2510,12 @@ This matters when writing tests and updating nested data.
 
 ------------------------------------------------------------------------
 
-## 17. Live-coding approach and communication
+## 18. Live-coding approach and communication
 
 The interviewer is assessing how you work, not just whether you can type
 quickly.
 
-### 17.1 Start by clarifying the task
+### 18.1 Start by clarifying the task
 
 Before coding, ask questions such as:
 
@@ -2091,7 +2530,7 @@ Before coding, ask questions such as:
 Do not ask every question mechanically. Ask the questions that affect
 your implementation.
 
-### 17.2 Repeat your understanding
+### 18.2 Repeat your understanding
 
 For example:
 
@@ -2102,7 +2541,7 @@ For example:
 
 This gives the interviewer a chance to correct your interpretation.
 
-### 17.3 Work in small increments
+### 18.3 Work in small increments
 
 A useful order is:
 
@@ -2119,7 +2558,7 @@ A useful order is:
 Avoid writing a large amount of code before running it for the first
 time.
 
-### 17.4 Narrate your reasoning
+### 18.4 Narrate your reasoning
 
 You do not need to talk constantly. Explain important decisions:
 
@@ -2133,7 +2572,7 @@ You do not need to talk constantly. Explain important decisions:
 -   "I would add pagination if this endpoint needed to handle a large
     collection."
 
-### 17.5 When you get stuck
+### 18.5 When you get stuck
 
 Use this sequence:
 
@@ -2148,7 +2587,7 @@ If you do not know something, say so clearly and explain how you would
 investigate it. Do not pretend to know an API or library behaviour you
 are unsure about.
 
-### 17.6 Avoid overengineering
+### 18.6 Avoid overengineering
 
 Do not start by adding:
 
@@ -2164,7 +2603,7 @@ would extend the solution.
 
 ------------------------------------------------------------------------
 
-## 18. Three-day preparation plan
+## 19. Three-day preparation plan
 
 Adjust the hours to your energy and schedule. The goal is deliberate
 practice, not staying up all night.
@@ -2234,7 +2673,7 @@ fluency, sleep, and being able to explain your choices.
 
 ------------------------------------------------------------------------
 
-## 19. Practice exercises
+## 20. Practice exercises
 
 Try these without looking at the solutions first.
 
@@ -2325,10 +2764,12 @@ Without looking at the guide, explain:
 8.  What would you improve if the API needed to support many users?
 9.  How does Docker layer caching work when installing dependencies with `uv`?
 10. Why must a Flask server inside Docker listen on `0.0.0.0` instead of `127.0.0.1`?
+11. Why use UUIDs instead of auto-incrementing integer IDs?
+12. Why must passwords be hashed with a salt rather than encrypted, and what is the difference between HTTP 401 and 403?
 
 ------------------------------------------------------------------------
 
-## 20. Interview-day checklist
+## 21. Interview-day checklist
 
 ### Before the interview
 
@@ -2369,7 +2810,7 @@ Without looking at the guide, explain:
 
 ------------------------------------------------------------------------
 
-## 21. Quick reference
+## 22. Quick reference
 
 ### Start a new project
 
